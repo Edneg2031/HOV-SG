@@ -23,6 +23,129 @@
 - 检查位姿矩阵、旋转矩阵和相机内参是否合法。
 - 给所有输出帧重新生成统一的六位数字 ID。
 
+## 当前进度：600 帧已经转换成功后从这里继续
+
+如果终端已经出现：
+
+```text
+Converted 600 frames: /home/wlh50060092/HOV-SG/data/scannetpp_hovsg/test/00a231a370
+```
+
+不需要再次转换。进入 HOV-SG 项目后，从本节开始逐段执行。
+
+### 设置当前场景变量
+
+```bash
+cd /home/wlh50060092/HOV-SG
+conda activate hovsg
+
+export HOVSG_ROOT=/home/wlh50060092/HOV-SG
+export SCENE_ID=00a231a370
+export HOVSG_DATA_ROOT=$HOVSG_ROOT/data/scannetpp_hovsg
+export HOVSG_OUTPUT_ROOT=$HOVSG_ROOT/data/scene_graphs
+export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
+
+: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
+test -d "$CONVERTED_SCENE" \
+  && echo "converted scene: $CONVERTED_SCENE" \
+  || { echo "ERROR: converted scene not found"; return 1 2>/dev/null || exit 1; }
+```
+
+### 检查四类输入数量
+
+```bash
+for MODALITY in rgb depth pose intrinsics; do
+  printf '%-12s ' "$MODALITY"
+  find "$CONVERTED_SCENE/$MODALITY" -type f | wc -l
+done
+```
+
+预期结果：
+
+```text
+rgb          600
+depth        600
+pose         600
+intrinsics   600
+```
+
+### 检查第一帧 RGB、Depth、Pose 和内参
+
+```bash
+python - "$CONVERTED_SCENE" <<'PY'
+import sys
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+scene = Path(sys.argv[1])
+rgb_path = sorted((scene / "rgb").iterdir())[0]
+depth_path = sorted((scene / "depth").iterdir())[0]
+pose_path = sorted((scene / "pose").iterdir())[0]
+intrinsics_path = sorted((scene / "intrinsics").iterdir())[0]
+
+rgb = Image.open(rgb_path)
+depth = np.asarray(Image.open(depth_path))
+pose = np.loadtxt(pose_path)
+intrinsics = np.loadtxt(intrinsics_path)
+valid = depth[depth > 0]
+
+print("RGB:", rgb_path.name, rgb.size, rgb.mode)
+print("Depth:", depth_path.name, (depth.shape[1], depth.shape[0]), depth.dtype)
+print("Valid depth pixels:", valid.size)
+if valid.size:
+    print("Depth range (m):", float(valid.min()) / 1000.0, float(valid.max()) / 1000.0)
+print("Pose shape:", pose.shape)
+print(pose)
+print("Intrinsics shape:", intrinsics.shape)
+print(intrinsics)
+
+assert rgb.size == (depth.shape[1], depth.shape[0])
+assert pose.shape == (4, 4)
+assert intrinsics.shape == (3, 3)
+print("First-frame validation: OK")
+PY
+```
+
+### 运行第一轮 HOV-SG 测试
+
+当前有 600 帧，先设置 `pipeline.skip_frames=10`，实际处理约 60 帧。不要在第一次测试中
+设置为 1，否则会对 600 帧执行点云融合、SAM 和 CLIP，耗时很长。
+
+```bash
+python application/create_graph.py \
+  main.dataset=hm3dsem \
+  main.dataset_path="$HOVSG_DATA_ROOT" \
+  main.split=test \
+  main.scene_id="$SCENE_ID" \
+  main.save_path="$HOVSG_OUTPUT_ROOT" \
+  pipeline.skip_frames=10 \
+  pipeline.create_graph=false
+```
+
+### 检查运行输出
+
+```bash
+export SCENE_GRAPH_DIR=$HOVSG_OUTPUT_ROOT/hm3dsem/$SCENE_ID
+
+find "$SCENE_GRAPH_DIR" -maxdepth 2 -type f | sort
+ls -lh \
+  "$SCENE_GRAPH_DIR/full_pcd.ply" \
+  "$SCENE_GRAPH_DIR/masked_pcd.ply" \
+  "$SCENE_GRAPH_DIR/full_feats.pt" \
+  "$SCENE_GRAPH_DIR/mask_feats.pt"
+```
+
+第一次重点查看：
+
+```text
+full_pcd.ply
+masked_pcd.ply
+```
+
+确认点云没有翻转、重影、尺度异常后，再继续本文档第 9 节的完整层级场景图测试。
+
 ## 2. 设置项目路径
 
 在服务器终端中设置以下路径。只需要根据服务器的实际目录修改前两行：
