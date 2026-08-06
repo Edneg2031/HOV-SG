@@ -326,6 +326,55 @@ hovsg/data/hm3dsem/metadata/poses/00824-Dd4bFSTQ8gi.txt
 Matterport 提供的是按 split 打包的 TAR 文件，而不是 HOV-SG 可直接使用的逐场景下载
 链接。因此可以只解压一个场景，但网络下载通常仍需下载完整的 val TAR 包。
 
+#### 方案 A：从 Hugging Face 镜像下载
+
+如果 Matterport 官方地址要求注册，可以使用公开镜像：
+
+```text
+zhuhu00/hm3d
+```
+
+截至检查时该仓库不是 gated，并且包含 HOV-SG 所需的 habitat、semantic annotations
+和 semantic configs。它不是 Matterport 官方发布页；使用数据仍应遵守 HM3D/Matterport
+原始许可证，不应把公开镜像理解为免除许可要求。
+
+安装 Hugging Face CLI：
+
+```bash
+python -m pip install -U huggingface_hub
+```
+
+只下载 val split 所需的三个 TAR 文件：
+
+```bash
+mkdir -p data/hm3d_downloads
+
+hf download zhuhu00/hm3d \
+  hm3d-val-habitat-v0.2.tar \
+  hm3d-val-semantic-annots-v0.2.tar \
+  hm3d-val-semantic-configs-v0.2.tar \
+  --repo-type dataset \
+  --local-dir data/hm3d_downloads
+```
+
+这三个文件合计约 5.7 GB。Hugging Face 可以只下载指定 TAR，但由于每个场景仍封装在
+TAR 内，不能通过 `hf download` 只传输 `00824` 的 TAR 内部字节。下载完成后继续使用
+下文的 `tar --wildcards`，只解压目标场景。
+
+验证下载结果不是错误页面或 Git LFS 指针：
+
+```bash
+ls -lh data/hm3d_downloads/*.tar
+tar -tf data/hm3d_downloads/hm3d-val-habitat-v0.2.tar | head
+tar -tf data/hm3d_downloads/hm3d-val-semantic-annots-v0.2.tar | head
+tar -tf data/hm3d_downloads/hm3d-val-semantic-configs-v0.2.tar | head
+```
+
+预期 habitat 约 3.53 GB、semantic annotations 约 2.15 GB、semantic configs
+约 40 KB。
+
+#### 方案 B：从 Matterport 官方地址下载
+
 创建下载目录：
 
 ```bash
