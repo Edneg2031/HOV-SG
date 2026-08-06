@@ -31,6 +31,12 @@ def main():
         help="the file containing the poses to be used for generating the data",
     )
     parser.add_argument("--split", type=str, default="val")
+    parser.add_argument(
+        "--scene-id",
+        type=str,
+        default=None,
+        help="generate only this scene (for example 00824-Dd4bFSTQ8gi); default: all supported scenes",
+    )
     args = parser.parse_args()
     split = args.split
     all_scene_names = [
@@ -45,6 +51,13 @@ def main():
         "00877-4ok3usBNeis",
         "00890-6s7QHgap2fW",
     ]
+    if args.scene_id is not None:
+        if args.scene_id not in all_scene_names:
+            parser.error(
+                f"unsupported scene-id {args.scene_id!r}; choose one of: "
+                + ", ".join(all_scene_names)
+            )
+        all_scene_names = [args.scene_id]
     root_dataset_dir = args.dataset_dir
     root_save_dir = args.save_dir
     for scene_dir in all_scene_names:

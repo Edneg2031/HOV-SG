@@ -309,6 +309,139 @@ HM3D-Omni → HOV-SG 的格式转换脚本。
 Habitat-Sim 生成 `hm3dsem_walks`。HM3D-Omni 是另一种预渲染数据组织；即使场景 ID
 来源相同，也不代表它可以直接替换官方输入格式。
 
+### 10.1 推荐的单场景测试
+
+建议先测试：
+
+```text
+00824-Dd4bFSTQ8gi
+```
+
+仓库已经包含它的相机轨迹：
+
+```text
+hovsg/data/hm3dsem/metadata/poses/00824-Dd4bFSTQ8gi.txt
+```
+
+Matterport 提供的是按 split 打包的 TAR 文件，而不是 HOV-SG 可直接使用的逐场景下载
+链接。因此可以只解压一个场景，但网络下载通常仍需下载完整的 val TAR 包。
+
+创建下载目录：
+
+```bash
+mkdir -p data/hm3d_downloads
+```
+
+下载官方 README 指定的三个 val 包：
+
+```bash
+wget -c \
+  https://api.matterport.com/resources/habitat/hm3d-val-habitat-v0.2.tar \
+  -O data/hm3d_downloads/hm3d-val-habitat-v0.2.tar
+
+wget -c \
+  https://api.matterport.com/resources/habitat/hm3d-val-semantic-annots-v0.2.tar \
+  -O data/hm3d_downloads/hm3d-val-semantic-annots-v0.2.tar
+
+wget -c \
+  https://api.matterport.com/resources/habitat/hm3d-val-semantic-configs-v0.2.tar \
+  -O data/hm3d_downloads/hm3d-val-semantic-configs-v0.2.tar
+```
+
+`-c` 支持网络中断后续传。下载结束后先查看 TAR 内的真实路径：
+
+```bash
+for ARCHIVE in data/hm3d_downloads/*.tar; do
+  echo "===== ${ARCHIVE} ====="
+  tar -tf "${ARCHIVE}" | grep -E '00824-Dd4bFSTQ8gi|scene_dataset_config' | head -30
+done
+```
+
+创建临时解压目录，只提取目标场景以及全局配置文件：
+
+```bash
+mkdir -p data/hm3d_single
+
+tar -xf data/hm3d_downloads/hm3d-val-habitat-v0.2.tar \
+  -C data/hm3d_single \
+  --wildcards '*00824-Dd4bFSTQ8gi/*'
+
+tar -xf data/hm3d_downloads/hm3d-val-semantic-annots-v0.2.tar \
+  -C data/hm3d_single \
+  --wildcards '*00824-Dd4bFSTQ8gi/*'
+
+# semantic-configs 包通常较小，完整解压以保留 Habitat 必需的全局配置。
+tar -xf data/hm3d_downloads/hm3d-val-semantic-configs-v0.2.tar \
+  -C data/hm3d_single
+```
+
+不同版本的 TAR 可能自带一层 `hm3d/` 目录。定位最终数据根目录：
+
+```bash
+find data/hm3d_single -name hm3d_annotated_basis.scene_dataset_config.json -print
+find data/hm3d_single -type d -name 00824-Dd4bFSTQ8gi -print
+```
+
+正确的数据根目录必须同时满足：
+
+```text
+<HM3D_ROOT>/hm3d_annotated_basis.scene_dataset_config.json
+<HM3D_ROOT>/val/00824-Dd4bFSTQ8gi/
+```
+
+目标场景中应包含：
+
+```text
+Dd4bFSTQ8gi.basis.glb
+Dd4bFSTQ8gi.basis.navmesh
+Dd4bFSTQ8gi.glb
+Dd4bFSTQ8gi.semantic.glb
+Dd4bFSTQ8gi.semantic.txt
+```
+
+### 10.2 只生成一个场景的 RGB-D 轨迹
+
+假设上一步定位出的数据根目录为 `data/hm3d_single/hm3d`，执行：
+
+```bash
+python hovsg/data/hm3dsem/gen_hm3dsem_walks_from_poses.py \
+  --dataset_dir data/hm3d_single/hm3d \
+  --save_dir data/hm3dsem_walks \
+  --split val \
+  --scene-id 00824-Dd4bFSTQ8gi
+```
+
+脚本会使用仓库自带 pose，通过 Habitat-Sim 生成一一对应的：
+
+```text
+data/hm3dsem_walks/val/00824-Dd4bFSTQ8gi/
+├── rgb/
+├── depth/
+├── semantic/
+└── pose/
+```
+
+生成后检查各模态数量：
+
+```bash
+SCENE_DIR=data/hm3dsem_walks/val/00824-Dd4bFSTQ8gi
+for MODALITY in rgb depth semantic pose; do
+  printf '%-10s ' "${MODALITY}"
+  find "${SCENE_DIR}/${MODALITY}" -type f | wc -l
+done
+```
+
+四个数字应当一致。确认无误后再运行单场景建图：
+
+```bash
+python application/create_graph.py \
+  main.dataset=hm3dsem \
+  main.dataset_path=data/hm3dsem_walks \
+  main.split=val \
+  main.scene_id=00824-Dd4bFSTQ8gi \
+  main.save_path=data/scene_graphs
+```
+
 ## 安装完成后的目录检查
 
 完成环境安装和权重下载后，仓库至少应包含：
