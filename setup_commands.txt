@@ -8,32 +8,40 @@
 # 1. 处理 conda 的 SSL WRONG_VERSION_NUMBER
 # ============================================================
 
-# 先查看服务器是否配置了代理。HTTPS_PROXY 如果写成 https://代理:端口，
-# 但该端口实际是普通 HTTP 代理，就容易出现 WRONG_VERSION_NUMBER。
+# 先查看服务器是否配置了代理或同时加载多套 .condarc。
 env | grep -i proxy
 conda config --show-sources
 conda config --show | grep -E 'proxy|ssl_verify|channel'
 
-# 优先在当前终端临时清除代理后重试，不要先关闭 SSL 校验。
-unset HTTP_PROXY HTTPS_PROXY ALL_PROXY
-unset http_proxy https_proxy all_proxy
+# 当前华为服务器同时加载了：
+#   /home/huawei/miniconda3/.condarc -> repo.anaconda.com 外网源
+#   /root/.condarc                 -> conda.rnd.huawei.com 内网源
+# 外网源经过公司代理时 TLS 握手失败。用一个临时 CONDARC 隔离两套配置，
+# 仅通过华为内网 Conda 代理解析 defaults、pytorch 等频道。
+HOVSG_CONDARC=$(mktemp)
+conda config --file "$HOVSG_CONDARC" --set ssl_verify true
+conda config --file "$HOVSG_CONDARC" --set channel_alias http://conda.rnd.huawei.com/repository/conda-proxy
+conda config --file "$HOVSG_CONDARC" --add default_channels http://conda.rnd.huawei.com/repository/conda-proxy/main
+conda config --file "$HOVSG_CONDARC" --add default_channels http://conda.rnd.huawei.com/repository/conda-proxy/r
+conda config --file "$HOVSG_CONDARC" --add channels defaults
+conda config --file "$HOVSG_CONDARC" --add channels pytorch
+conda config --file "$HOVSG_CONDARC" --set channel_priority strict
+export CONDARC="$HOVSG_CONDARC"
+
+# 确认输出只包含 conda.rnd.huawei.com，不应再出现 repo.anaconda.com：
+conda config --show-sources
+conda config --show channels default_channels channel_alias
+
 conda clean --index-cache -y
 conda env create -f environment.yaml
 
-# 如果服务器必须使用代理，通常 HTTP_PROXY 和 HTTPS_PROXY 都应使用
-# http:// 协议。把下面的地址和端口替换成服务器提供的实际值：
-# export HTTP_PROXY=http://PROXY_HOST:PROXY_PORT
-# export HTTPS_PROXY=http://PROXY_HOST:PROXY_PORT
-# conda clean --index-cache -y
-# conda env create -f environment.yaml
+# 如果不再需要临时配置，可在全部安装完成后执行：
+# unset CONDARC
+# rm -f "$HOVSG_CONDARC"
 
-# 如果直连 repo.anaconda.com 不通，可改用清华镜像后重试：
-# conda config --remove-key channels 2>/dev/null || true
-# conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch
-# conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
-# conda config --set show_channel_urls yes
-# conda clean --index-cache -y
-# conda env create -f environment.yaml
+# 注意：不要把带有用户名和密码的代理 URL 粘贴到日志、Git 或聊天中。
+# 如果已经公开，立即删除消息并更换密码。关闭 ssl_verify 对当前
+# WRONG_VERSION_NUMBER 没有帮助，不建议使用。
 
 
 # ============================================================
