@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+set -e
+
+# 1. 进入已有环境
+conda activate horizonstream
+
+# 2. 先装 HOV-SG 的 Python 依赖
+pip install open3d==0.18.0 hydra-core open-clip-torch ftfy torchmetrics pyvista scikit-fmm pathos openai==1.3.7
+pip install git+https://github.com/facebookresearch/segment-anything.git
+
+# 3. 服务器如果访问 conda 默认源报 SSL/403，先临时绕过校验和默认源
+conda config --set ssl_verify false
+conda install --override-channels -c conda-forge -c aihabitat habitat-sim
+conda config --set ssl_verify true
+
+# 4. 安装当前仓库本身
+pip install -e .
+
+# 5. 如果上面的 conda 仍然受环境限制，改用临时环境变量方式
+# export CONDA_SSL_VERIFY=false
+# conda install --override-channels -c conda-forge -c aihabitat habitat-sim
+# unset CONDA_SSL_VERIFY
