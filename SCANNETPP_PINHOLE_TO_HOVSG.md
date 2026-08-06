@@ -171,6 +171,10 @@ python convert_scannetpp_pinhole.py \
 
 ```bash
 export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
+: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
+test -d "$CONVERTED_SCENE" \
+  && echo "converted scene: $CONVERTED_SCENE" \
+  || echo "ERROR: converted scene directory not found"
 ```
 
 检查输出结构：
@@ -193,6 +197,9 @@ find "$CONVERTED_SCENE" -maxdepth 2 -type f | sort | head -40
 检查 RGB、depth、pose 和 intrinsics 数量：
 
 ```bash
+export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
+: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
+
 for MODALITY in rgb depth pose intrinsics; do
   printf '%-12s ' "$MODALITY"
   find "$CONVERTED_SCENE/$MODALITY" -type f | wc -l
@@ -263,17 +270,20 @@ python application/create_graph.py \
   main.split=test \
   main.scene_id="$SCENE_ID" \
   main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=1 \
+  pipeline.skip_frames=10 \
   pipeline.create_graph=false
 ```
 
-必须使用：
+`pipeline.skip_frames` 应根据转换后的帧数设置：
 
 ```text
-pipeline.skip_frames=1
+约 20 帧：pipeline.skip_frames=1
+约 100 帧：pipeline.skip_frames=2 或 5
+约 600 帧：pipeline.skip_frames=10
 ```
 
-因为 vggtSam 的测试数据可能只有约 20 帧。使用默认值 10 时，只会处理约两帧。
+当前示例实际转换出 600 帧，因此先使用 10，约处理 60 帧，足够进行第一轮效果验证。
+设为 1 会对全部 600 帧运行两轮点云/SAM/CLIP 处理，时间和显存开销很大。
 
 ## 8. 查看第一次运行的输出
 
@@ -329,7 +339,7 @@ python application/create_graph.py \
   main.split=test \
   main.scene_id="$SCENE_ID" \
   main.save_path="$HOVSG_HIERARCHY_OUTPUT" \
-  pipeline.skip_frames=1 \
+  pipeline.skip_frames=10 \
   pipeline.create_graph=true
 ```
 
@@ -430,6 +440,8 @@ python convert_scannetpp_pinhole.py \
   --copy
 
 export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
+: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
+test -d "$CONVERTED_SCENE" || { echo "ERROR: $CONVERTED_SCENE not found"; return 1 2>/dev/null || exit 1; }
 for MODALITY in rgb depth pose intrinsics; do
   printf '%-12s ' "$MODALITY"
   find "$CONVERTED_SCENE/$MODALITY" -type f | wc -l
@@ -441,6 +453,6 @@ python application/create_graph.py \
   main.split=test \
   main.scene_id="$SCENE_ID" \
   main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=1 \
+  pipeline.skip_frames=10 \
   pipeline.create_graph=false
 ```
