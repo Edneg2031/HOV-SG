@@ -132,3 +132,13 @@ find "$SCENE_DIR/point_info" -type f \( -name '*.txt' -o -name '*.json' \) \
 #   hm3d-val-habitat-v0.2.tar
 #   hm3d-val-semantic-annots-v0.2.tar
 #   hm3d-val-semantic-configs-v0.2.tar
+
+
+
+
+conda clean --index-cache -y
+
+conda create -n hovsg -y --override-channels \
+  -c http://conda.rnd.huawei.com/repository/conda-proxy/pytorch \
+  -c http://conda.rnd.huawei.com/repository/conda-proxy/main \
+  python=3.9 numpy faiss-gpu pip
