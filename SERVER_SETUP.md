@@ -128,7 +128,11 @@ Habitat-Sim 的 Conda 求解可能重新安装旧版 SciPy。安装完成后再�
 ```bash
 python -m pip install --upgrade --force-reinstall \
   numpy==1.26.4 \
-  scipy==1.13.1
+  scipy==1.13.1 \
+  pillow==10.4.0 \
+  imageio-ffmpeg
+
+python -m pip check
 ```
 
 验证 Habitat-Sim：

@@ -119,7 +119,9 @@ SciPy。先重新固定兼容版本：
 ```bash
 python -m pip install --upgrade --force-reinstall \
   numpy==1.26.4 \
-  scipy==1.13.1
+  scipy==1.13.1 \
+  pillow==10.4.0 \
+  imageio-ffmpeg
 
 python - <<'PY'
 import matplotlib
@@ -130,10 +132,14 @@ print("NumPy:", numpy.__version__)
 print("SciPy:", scipy.__version__)
 print("Matplotlib backend:", matplotlib.get_backend())
 PY
+
+python -m pip check
 ```
 
-预期为 NumPy 1.26.4、SciPy 1.13.1。HOV-SG 已将导航图后端改为 `Agg`，服务器不需要
-Tk 或桌面显示。
+预期为 NumPy 1.26.4、SciPy 1.13.1、Matplotlib `agg`，并且 `pip check` 输出
+`No broken requirements found`。Habitat-Sim 0.3.3 要求 Pillow 10.4.0 和
+`imageio-ffmpeg`，因此这里同时固定安装。HOV-SG 已将导航图后端改为 `Agg`，服务器
+不需要 Tk 或桌面显示。
 
 ```bash
 python application/create_graph.py \
