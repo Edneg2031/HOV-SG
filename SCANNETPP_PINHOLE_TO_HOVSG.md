@@ -141,6 +141,58 @@ python -m pip check
 `imageio-ffmpeg`，因此这里同时固定安装。HOV-SG 已将导航图后端改为 `Agg`，服务器
 不需要 Tk 或桌面显示。
 
+运行前校验 OpenCLIP 权重。正确的
+`laion/CLIP-ViT-H-14-laion2B-s32B-b79K` 文件信息为：
+
+```text
+文件：open_clip_pytorch_model.bin
+字节数：3944692325
+约：3.67 GiB / 3.94 GB
+SHA-256：9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4
+```
+
+项目将它保存为 `checkpoints/laion2b_s32b_b79k.bin`。本地文件名可以不同，但文件内容、
+大小和哈希必须匹配：
+
+```bash
+cd "$HOVSG_ROOT"
+
+ls -lh checkpoints/laion2b_s32b_b79k.bin
+stat -c '%s bytes' checkpoints/laion2b_s32b_b79k.bin
+sha256sum checkpoints/laion2b_s32b_b79k.bin
+```
+
+如果字节数或 SHA-256 不一致，不要只重命名旧文件。重新下载到临时文件，校验成功后
+再替换：
+
+```bash
+mkdir -p checkpoints
+
+wget -c \
+  'https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K/resolve/main/open_clip_pytorch_model.bin?download=true' \
+  -O checkpoints/laion2b_s32b_b79k.bin.download
+
+echo '9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4  checkpoints/laion2b_s32b_b79k.bin.download' \
+  | sha256sum -c -
+
+mv checkpoints/laion2b_s32b_b79k.bin.download \
+  checkpoints/laion2b_s32b_b79k.bin
+```
+
+只有出现以下结果才继续：
+
+```text
+checkpoints/laion2b_s32b_b79k.bin.download: OK
+```
+
+SAM ViT-H 权重 `sam_vit_h_4b8939.pth` 的官方大小为 2,564,550,879 字节，约
+2.39 GiB / 2.56 GB，可用下面的命令检查是否明显下载不完整：
+
+```bash
+ls -lh checkpoints/sam_vit_h_4b8939.pth
+stat -c '%s bytes' checkpoints/sam_vit_h_4b8939.pth
+```
+
 ```bash
 python application/create_graph.py \
   main.dataset=hm3dsem \
@@ -566,6 +618,18 @@ COLMAP world-to-camera (OpenCV coordinates)
 3. COLMAP pose 是否与对应的 RGB 文件名匹配。
 4. `zbuf` 是否来自同一帧的 mesh rasterization。
 5. 相机轨迹自身是否存在漂移。
+
+### Pose 报错 `cannot reshape array of size 4 into shape (4,4)`
+
+转换器将 4×4 pose 保存为四行，每行四个数。旧版 `hm3dsem.py` 只读取第一行，因此只能
+读到 4 个数。更新本项目的：
+
+```text
+hovsg/dataloader/hm3dsem.py
+```
+
+新版会读取 pose 文件中的全部空白分隔数值，同时兼容“一行 16 个数”和“四行四列”两种
+格式。已有转换数据不需要重新生成。
 
 ## 11. 最短复制版
 

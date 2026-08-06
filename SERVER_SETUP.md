@@ -183,6 +183,14 @@ wget \
   -O checkpoints/laion2b_s32b_b79k.bin
 ```
 
+校验 OpenCLIP 权重。官方文件应为 3,944,692,325 字节，SHA-256 如下：
+
+```bash
+stat -c '%s bytes' checkpoints/laion2b_s32b_b79k.bin
+echo '9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4  checkpoints/laion2b_s32b_b79k.bin' \
+  | sha256sum -c -
+```
+
 下载 Segment Anything ViT-H 权重：
 
 ```bash

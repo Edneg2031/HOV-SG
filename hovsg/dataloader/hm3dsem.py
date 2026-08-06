@@ -135,9 +135,11 @@ class HM3DSemDataset(RGBDDataset):
             Camera pose as a numpy array (4x4 matrix).
         """
         with open(path, "r") as file:
-            line = file.readline().strip()
-            values = line.split()
-            values = [float(val) for val in values]
+            values = [float(val) for val in file.read().split()]
+            if len(values) != 16:
+                raise ValueError(
+                    f"Pose file must contain 16 numeric values, got {len(values)}: {path}"
+                )
             transformation_matrix = np.array(values).reshape((4, 4))
             if self.pose_coordinates == "opengl":
                 C = np.eye(4)
