@@ -113,6 +113,28 @@ PY
 当前有 600 帧，先设置 `pipeline.skip_frames=10`，实际处理约 60 帧。不要在第一次测试中
 设置为 1，否则会对 600 帧执行点云融合、SAM 和 CLIP，耗时很长。
 
+若终端出现 SciPy 要求 NumPy `<1.25.0` 的警告，说明 Habitat-Sim 安装过程换回了旧版
+SciPy。先重新固定兼容版本：
+
+```bash
+python -m pip install --upgrade --force-reinstall \
+  numpy==1.26.4 \
+  scipy==1.13.1
+
+python - <<'PY'
+import matplotlib
+import numpy
+import scipy
+
+print("NumPy:", numpy.__version__)
+print("SciPy:", scipy.__version__)
+print("Matplotlib backend:", matplotlib.get_backend())
+PY
+```
+
+预期为 NumPy 1.26.4、SciPy 1.13.1。HOV-SG 已将导航图后端改为 `Agg`，服务器不需要
+Tk 或桌面显示。
+
 ```bash
 python application/create_graph.py \
   main.dataset=hm3dsem \

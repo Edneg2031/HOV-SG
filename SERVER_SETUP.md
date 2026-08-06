@@ -123,6 +123,14 @@ conda install -y --override-channels \
   habitat-sim
 ```
 
+Habitat-Sim 的 Conda 求解可能重新安装旧版 SciPy。安装完成后再次固定兼容版本：
+
+```bash
+python -m pip install --upgrade --force-reinstall \
+  numpy==1.26.4 \
+  scipy==1.13.1
+```
+
 验证 Habitat-Sim：
 
 ```bash
