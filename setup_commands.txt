@@ -1,0 +1,128 @@
+# HOV-SG 服务器环境配置与数据检查步骤
+#
+# 建议逐段复制执行，不要直接整文件一次性运行。项目要求 Python 3.9，
+# conda env create 会新建 hovsg 环境，不会修改当前 horizonstream 环境。
+
+
+# ============================================================
+# 1. 处理 conda 的 SSL WRONG_VERSION_NUMBER
+# ============================================================
+
+# 先查看服务器是否配置了代理。HTTPS_PROXY 如果写成 https://代理:端口，
+# 但该端口实际是普通 HTTP 代理，就容易出现 WRONG_VERSION_NUMBER。
+env | grep -i proxy
+conda config --show-sources
+conda config --show | grep -E 'proxy|ssl_verify|channel'
+
+# 优先在当前终端临时清除代理后重试，不要先关闭 SSL 校验。
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY
+unset http_proxy https_proxy all_proxy
+conda clean --index-cache -y
+conda env create -f environment.yaml
+
+# 如果服务器必须使用代理，通常 HTTP_PROXY 和 HTTPS_PROXY 都应使用
+# http:// 协议。把下面的地址和端口替换成服务器提供的实际值：
+# export HTTP_PROXY=http://PROXY_HOST:PROXY_PORT
+# export HTTPS_PROXY=http://PROXY_HOST:PROXY_PORT
+# conda clean --index-cache -y
+# conda env create -f environment.yaml
+
+# 如果直连 repo.anaconda.com 不通，可改用清华镜像后重试：
+# conda config --remove-key channels 2>/dev/null || true
+# conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch
+# conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+# conda config --set show_channel_urls yes
+# conda clean --index-cache -y
+# conda env create -f environment.yaml
+
+
+# ============================================================
+# 2. 安装 Habitat-Sim 和当前项目
+# ============================================================
+
+conda activate hovsg
+conda install habitat-sim -c conda-forge -c aihabitat
+pip install -e .
+
+# 简单验证核心包：
+python -c "import torch, habitat_sim, open3d, hovsg; print('environment OK')"
+
+
+# ============================================================
+# 3. 下载模型权重
+# ============================================================
+
+mkdir -p checkpoints
+
+# OpenCLIP：
+wget 'https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K/resolve/main/open_clip_pytorch_model.bin?download=true' \
+  -O checkpoints/laion2b_s32b_b79k.bin
+
+# Segment Anything：
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth \
+  -O checkpoints/sam_vit_h_4b8939.pth
+
+
+# ============================================================
+# 4. 解压 HM3D-Omni 场景
+# ============================================================
+
+python extract_scenes.py 00127-EN7GiDgxdQ2
+
+# 输出位置：
+# data/hm3d_omni/00127-EN7GiDgxdQ2/{rgb,depth_zbuffer,
+# depth_euclidean,mask_valid,point_info}
+
+
+# ============================================================
+# 5. 检查 HM3D-Omni 是否能直接作为 HOV-SG 输入
+# ============================================================
+
+SCENE_DIR=data/hm3d_omni/00127-EN7GiDgxdQ2
+
+# 查看各目录的文件后缀、数量和几个示例路径：
+for MODALITY in rgb depth_zbuffer depth_euclidean mask_valid point_info; do
+  echo "===== $MODALITY ====="
+  find "$SCENE_DIR/$MODALITY" -type f | sed 's/.*\.//' | sort | uniq -c
+  find "$SCENE_DIR/$MODALITY" -type f | sort | head -5
+done
+
+# 查看 point_info 中普通文本或 JSON 文件的内容（如果存在）：
+find "$SCENE_DIR/point_info" -type f \( -name '*.txt' -o -name '*.json' \) \
+  -print -exec head -30 {} \; | head -100
+
+# HOV-SG 当前的 hm3dsem loader 要求每一帧严格对应：
+#   rgb/<frame>.png
+#   depth/<frame>.png
+#   pose/<frame>.txt       （16 个浮点数，表示 4x4 相机位姿）
+#
+# 当前场景解压结果为：
+#   rgb              1150 files
+#   depth_zbuffer    21613 files
+#   depth_euclidean   4041 files
+#   mask_valid       21613 files
+#   point_info       21613 files
+#
+# 数量不一致，且 point_info 不等于已经确认可用的 4x4 pose，因此不能直接：
+#   mv point_info pose
+# 也不能直接运行 application/create_graph.py。
+#
+# 下一步必须根据上面文件示例确认：
+#   1. rgb、depth 和 point_info 的文件命名/目录层级如何关联；
+#   2. point_info 是否包含 camera_to_world/world_to_camera、位置和四元数；
+#   3. 深度的文件格式、单位和相机内参；
+#   4. 从 21613 个深度文件中选择与 1150 张 RGB 对应的帧。
+# 确认这些字段后，再编写转换脚本生成 HOV-SG 的 rgb/depth/pose 目录。
+
+
+# ============================================================
+# 6. 如果目标是严格跟随官方 README
+# ============================================================
+
+# 官方流程使用 HM3DSem 原始场景文件（.glb/.navmesh/.semantic.txt）和仓库
+# 提供的 camera poses，通过 Habitat-Sim 生成 hm3dsem_walks。HM3D-Omni 是
+# 另一种预渲染数据组织，场景 ID 相同不代表文件可直接替换官方输入格式。
+# 在还未完成 HM3D-Omni 格式转换前，复现官方流程应下载 README 列出的：
+#   hm3d-val-habitat-v0.2.tar
+#   hm3d-val-semantic-annots-v0.2.tar
+#   hm3d-val-semantic-configs-v0.2.tar
