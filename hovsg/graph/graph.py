@@ -149,16 +149,30 @@ class Graph:
             print("No dataset loaded")
             return
 
-        # create the RGB-D point cloud
-        for i in tqdm(range(0, len(self.dataset), self.cfg.pipeline.skip_frames), desc="Creating RGB-D point cloud"):
+        # Create the RGB-D point cloud. Downsample each frame before merging so
+        # high-resolution sequences do not accumulate tens of millions of raw
+        # pixels in memory before the first voxel operation.
+        selected_frames = range(0, len(self.dataset), self.cfg.pipeline.skip_frames)
+        for frame_number, i in enumerate(tqdm(selected_frames, desc="Creating RGB-D point cloud"), start=1):
             rgb_image, depth_image, pose, _, depth_intrinsics = self.dataset[i]
-            self.full_pcd += self.dataset.create_pcd(rgb_image, depth_image, pose)
+            frame_pcd = self.dataset.create_pcd(rgb_image, depth_image, pose)
+            frame_pcd = frame_pcd.voxel_down_sample(self.cfg.pipeline.voxel_size)
+            self.full_pcd += frame_pcd
+            if frame_number % 5 == 0:
+                self.full_pcd = self.full_pcd.voxel_down_sample(
+                    voxel_size=self.cfg.pipeline.voxel_size
+                )
 
         # filter point cloud
         self.full_pcd = self.full_pcd.voxel_down_sample(
             voxel_size=self.cfg.pipeline.voxel_size
         )
-        self.full_pcd = pcd_denoise_dbscan(self.full_pcd, eps=0.01, min_points=100)
+        if self.cfg.pipeline.denoise_full_pcd:
+            self.full_pcd = pcd_denoise_dbscan(
+                self.full_pcd,
+                eps=self.cfg.pipeline.full_pcd_dbscan_eps,
+                min_points=self.cfg.pipeline.full_pcd_dbscan_min_points,
+            )
 
         # create tree from full point cloud
         locs_in = np.array(self.full_pcd.points)

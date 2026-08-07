@@ -33,6 +33,11 @@ Converted 600 frames: /home/wlh50060092/HOV-SG/data/scannetpp_hovsg/test/00a231a
 
 不需要再次转换。进入 HOV-SG 项目后，从本节开始逐段执行。
 
+如果旧的 `create_graph.py` 进程长期保持 CPU 约 100%、GPU 0%，说明它停在旧版全量点云
+DBSCAN，不是在进行模型推理。先在原终端按 `Ctrl+C`。无法回到原终端时，先用
+`ps -ef | grep '[c]reate_graph.py'` 确认 PID，再对确认的 PID 执行普通 `kill <PID>`。
+不要直接对不确定的进程使用 `kill -9`。
+
 ### 设置当前场景变量
 
 ```bash
@@ -110,8 +115,8 @@ PY
 
 ### 运行第一轮 HOV-SG 测试
 
-当前有 600 帧，先设置 `pipeline.skip_frames=10`，实际处理约 60 帧。不要在第一次测试中
-设置为 1，否则会对 600 帧执行点云融合、SAM 和 CLIP，耗时很长。
+当前有 600 帧。第一轮只验证流程，使用 `pipeline.skip_frames=100`，实际处理 6 帧，
+同时降低 SAM 采样密度并关闭全场景 DBSCAN。确认流程跑通后再逐步增加帧数。
 
 若终端出现 SciPy 要求 NumPy `<1.25.0` 的警告，说明 Habitat-Sim 安装过程换回了旧版
 SciPy。先重新固定兼容版本：
@@ -194,20 +199,25 @@ stat -c '%s bytes' checkpoints/sam_vit_h_4b8939.pth
 ```
 
 ```bash
+export HOVSG_QUICK_OUTPUT=$HOVSG_ROOT/data/scene_graphs_quick
+
 python application/create_graph.py \
   main.dataset=hm3dsem \
   main.dataset_path="$HOVSG_DATA_ROOT" \
   main.split=test \
   main.scene_id="$SCENE_ID" \
-  main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=10 \
-  pipeline.create_graph=false
+  main.save_path="$HOVSG_QUICK_OUTPUT" \
+  pipeline.skip_frames=100 \
+  pipeline.create_graph=false \
+  pipeline.denoise_full_pcd=false \
+  models.sam.points_per_side=6 \
+  models.sam.points_per_batch=36
 ```
 
 ### 检查运行输出
 
 ```bash
-export SCENE_GRAPH_DIR=$HOVSG_OUTPUT_ROOT/hm3dsem/$SCENE_ID
+export SCENE_GRAPH_DIR=$HOVSG_QUICK_OUTPUT/hm3dsem/$SCENE_ID
 
 find "$SCENE_GRAPH_DIR" -maxdepth 2 -type f | sort
 ls -lh \
@@ -473,8 +483,11 @@ python application/create_graph.py \
   main.split=test \
   main.scene_id="$SCENE_ID" \
   main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=10 \
-  pipeline.create_graph=false
+  pipeline.skip_frames=100 \
+  pipeline.create_graph=false \
+  pipeline.denoise_full_pcd=false \
+  models.sam.points_per_side=6 \
+  models.sam.points_per_batch=36
 ```
 
 `pipeline.skip_frames` 应根据转换后的帧数设置：
@@ -482,7 +495,8 @@ python application/create_graph.py \
 ```text
 约 20 帧：pipeline.skip_frames=1
 约 100 帧：pipeline.skip_frames=2 或 5
-约 600 帧：pipeline.skip_frames=10
+约 600 帧首次冒烟测试：pipeline.skip_frames=100
+约 600 帧正式测试：pipeline.skip_frames=10
 ```
 
 当前示例实际转换出 600 帧，因此先使用 10，约处理 60 帧，足够进行第一轮效果验证。
@@ -668,6 +682,9 @@ python application/create_graph.py \
   main.split=test \
   main.scene_id="$SCENE_ID" \
   main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=10 \
-  pipeline.create_graph=false
+  pipeline.skip_frames=100 \
+  pipeline.create_graph=false \
+  pipeline.denoise_full_pcd=false \
+  models.sam.points_per_side=6 \
+  models.sam.points_per_batch=36
 ```

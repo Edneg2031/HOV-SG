@@ -27,6 +27,9 @@ models:
 pipeline:
   create_graph: True
   voxel_size: 0.02
+  denoise_full_pcd: true
+  full_pcd_dbscan_eps: 0.01
+  full_pcd_dbscan_min_points: 100
   skip_frames: 10
   init_overlap_thresh: 0.75
   overlap_thresh_factor: 0.025
