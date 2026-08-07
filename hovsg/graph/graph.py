@@ -320,8 +320,11 @@ class Graph:
 
         # cluster the peaks using DBSCAN
         peaks_locations = z_hist[1][peaks]
-        clustering = DBSCAN(eps=1, min_samples=1).fit(peaks_locations.reshape(-1, 1))
-        labels = clustering.labels_
+        if len(peaks_locations) > 0:
+            clustering = DBSCAN(eps=1, min_samples=1).fit(peaks_locations.reshape(-1, 1))
+            labels = clustering.labels_
+        else:
+            labels = np.empty(0, dtype=int)
 
         # plot the histogram
         if self.cfg.pipeline.save_intermediate_results:
@@ -365,6 +368,22 @@ class Graph:
         for i in range(0, len(clustred_peaks) - 1, 2):
             floors.append([clustred_peaks[i], clustred_peaks[i + 1]])
         print("floors", floors)
+        # A sparse or single-storey scan may expose only one strong horizontal
+        # surface, while the original implementation assumes paired floor and
+        # ceiling peaks. Keep the graph pipeline usable by treating the full
+        # observed height range as one floor in that case.
+        if not floors:
+            min_height = float(np.min(downpcd[:, 1]))
+            max_height = float(np.max(downpcd[:, 1]))
+            if np.isclose(min_height, max_height):
+                raise RuntimeError(
+                    "Cannot segment floors: point cloud has no vertical extent"
+                )
+            floors = [[min_height, max_height]]
+            print(
+                "fewer than two floor/ceiling peaks detected; "
+                f"using one floor spanning [{min_height:.3f}, {max_height:.3f}]"
+            )
         # for the first floor extend the floor to the ground
         floors[0][0] = (floors[0][0] + np.min(downpcd[:, 1])) / 2
         # for the last floor extend the floor to the ceiling

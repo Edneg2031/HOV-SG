@@ -1,579 +1,125 @@
-# 使用 ScanNet++ Pinhole 数据测试 HOV-SG
+# ScanNet++ 单场景继续运行 HOV-SG
 
-本文档用于把 `vggtSam` 已处理的一个 ScanNet++ pinhole 场景转换为 HOV-SG 输入，
-然后运行一次最小效果测试。
+本文只记录场景 `00a231a370` 接下来要执行的步骤。环境、依赖和权重均假定已经配置完成。
 
-## 1. 数据对应关系
+当前旧点云在 MeshLab 中显示 Z 轴竖直，但 HOV-SG 的楼层、房间和导航代码要求 Y-up。
+因此必须重新转换 pose，不能直接用旧输出继续构建层级图。
 
-转换过程使用以下数据：
+## 1. 同步新版代码
 
-| vggtSam 数据 | HOV-SG 输入 |
-|---|---|
-| `image_path` 对应的 RGB | `rgb/*.jpg` |
-| `raster/*.npz` 中的 `zbuf` | `depth/*.png` |
-| COLMAP `images.txt` 中的 world-to-camera | `pose/*.txt` camera-to-world |
-| COLMAP `cameras.txt` 中的相机参数 | `intrinsics/*.txt` |
-
-转换器会完成：
-
-- 将 `zbuf` 的米制 Z-depth 转为毫米制 uint16 PNG。
-- 将 COLMAP world-to-camera 位姿转换为 4×4 camera-to-world 矩阵。
-- 将 COLMAP 像素中心约定转换为 OpenCV 像素坐标约定。
-- 检查 RGB 和 depth 分辨率。
-- 检查位姿矩阵、旋转矩阵和相机内参是否合法。
-- 给所有输出帧重新生成统一的六位数字 ID。
-- 将 ScanNet++ 的 Z-up 世界坐标旋转为 HOV-SG 楼层算法需要的 Y-up 坐标。
-
-## 当前进度：600 帧已经转换成功后从这里继续
-
-如果终端已经出现：
+把本机当前项目同步到服务器，至少包含：
 
 ```text
-Converted 600 frames: /home/wlh50060092/HOV-SG/data/scannetpp_hovsg/test/00a231a370
+convert_scannetpp_pinhole.py
+hovsg/dataloader/hm3dsem.py
+hovsg/graph/graph.py
+hovsg/graph/navigation_graph.py
+application/create_graph.py
+config/create_graph.yaml
 ```
 
-不需要再次转换。进入 HOV-SG 项目后，从本节开始逐段执行。
+在服务器确认转换器包含 Z-up → Y-up：
 
-如果旧的 `create_graph.py` 进程长期保持 CPU 约 100%、GPU 0%，说明它停在旧版全量点云
-DBSCAN，不是在进行模型推理。先在原终端按 `Ctrl+C`。无法回到原终端时，先用
-`ps -ef | grep '[c]reate_graph.py'` 确认 PID，再对确认的 PID 执行普通 `kill <PID>`。
-不要直接对不确定的进程使用 `kill -9`。
+```bash
+cd /home/wlh50060092/HOV-SG
+grep -n 'Z_UP_TO_Y_UP' convert_scannetpp_pinhole.py
+```
 
-### 设置当前场景变量
+必须同时找到矩阵定义和 `pose = Z_UP_TO_Y_UP @ pose`。找不到时先同步新版代码。
+
+## 2. 设置变量
 
 ```bash
 cd /home/wlh50060092/HOV-SG
 conda activate hovsg
 
-export HOVSG_ROOT=/home/wlh50060092/HOV-SG
-export SCENE_ID=00a231a370
-export HOVSG_DATA_ROOT=$HOVSG_ROOT/data/scannetpp_hovsg
-export HOVSG_OUTPUT_ROOT=$HOVSG_ROOT/data/scene_graphs
-export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
-
-: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
-test -d "$CONVERTED_SCENE" \
-  && echo "converted scene: $CONVERTED_SCENE" \
-  || { echo "ERROR: converted scene not found"; return 1 2>/dev/null || exit 1; }
-```
-
-### 检查四类输入数量
-
-```bash
-for MODALITY in rgb depth pose intrinsics; do
-  printf '%-12s ' "$MODALITY"
-  find "$CONVERTED_SCENE/$MODALITY" -type f | wc -l
-done
-```
-
-预期结果：
-
-```text
-rgb          600
-depth        600
-pose         600
-intrinsics   600
-```
-
-### 检查第一帧 RGB、Depth、Pose 和内参
-
-```bash
-python - "$CONVERTED_SCENE" <<'PY'
-import sys
-from pathlib import Path
-
-import numpy as np
-from PIL import Image
-
-scene = Path(sys.argv[1])
-rgb_path = sorted((scene / "rgb").iterdir())[0]
-depth_path = sorted((scene / "depth").iterdir())[0]
-pose_path = sorted((scene / "pose").iterdir())[0]
-intrinsics_path = sorted((scene / "intrinsics").iterdir())[0]
-
-rgb = Image.open(rgb_path)
-depth = np.asarray(Image.open(depth_path))
-pose = np.loadtxt(pose_path)
-intrinsics = np.loadtxt(intrinsics_path)
-valid = depth[depth > 0]
-
-print("RGB:", rgb_path.name, rgb.size, rgb.mode)
-print("Depth:", depth_path.name, (depth.shape[1], depth.shape[0]), depth.dtype)
-print("Valid depth pixels:", valid.size)
-if valid.size:
-    print("Depth range (m):", float(valid.min()) / 1000.0, float(valid.max()) / 1000.0)
-print("Pose shape:", pose.shape)
-print(pose)
-print("Intrinsics shape:", intrinsics.shape)
-print(intrinsics)
-
-assert rgb.size == (depth.shape[1], depth.shape[0])
-assert pose.shape == (4, 4)
-assert intrinsics.shape == (3, 3)
-print("First-frame validation: OK")
-PY
-```
-
-### 运行第一轮 HOV-SG 测试
-
-当前有 600 帧。第一轮只验证流程，使用 `pipeline.skip_frames=100`，实际处理索引
-`0、100、200、300、400、500` 的 6 帧。它们是按固定步长顺序抽取的，不是随机抽取。
-同时降低 SAM 采样密度并关闭全场景 DBSCAN。确认流程跑通后再逐步增加帧数。
-
-若终端出现 SciPy 要求 NumPy `<1.25.0` 的警告，说明 Habitat-Sim 安装过程换回了旧版
-SciPy。先重新固定兼容版本：
-
-```bash
-python -m pip install --upgrade --force-reinstall \
-  numpy==1.26.4 \
-  scipy==1.13.1 \
-  pillow==10.4.0 \
-  imageio-ffmpeg
-
-python - <<'PY'
-import matplotlib
-import numpy
-import scipy
-
-print("NumPy:", numpy.__version__)
-print("SciPy:", scipy.__version__)
-print("Matplotlib backend:", matplotlib.get_backend())
-PY
-
-python -m pip check
-```
-
-预期为 NumPy 1.26.4、SciPy 1.13.1、Matplotlib `agg`，并且 `pip check` 输出
-`No broken requirements found`。Habitat-Sim 0.3.3 要求 Pillow 10.4.0 和
-`imageio-ffmpeg`，因此这里同时固定安装。HOV-SG 已将导航图后端改为 `Agg`，服务器
-不需要 Tk 或桌面显示。
-
-运行前校验 OpenCLIP 权重。正确的
-`laion/CLIP-ViT-H-14-laion2B-s32B-b79K` 文件信息为：
-
-```text
-文件：open_clip_pytorch_model.bin
-字节数：3944692325
-约：3.67 GiB / 3.94 GB
-SHA-256：9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4
-```
-
-项目将它保存为 `checkpoints/laion2b_s32b_b79k.bin`。本地文件名可以不同，但文件内容、
-大小和哈希必须匹配：
-
-```bash
-cd "$HOVSG_ROOT"
-
-ls -lh checkpoints/laion2b_s32b_b79k.bin
-stat -c '%s bytes' checkpoints/laion2b_s32b_b79k.bin
-sha256sum checkpoints/laion2b_s32b_b79k.bin
-```
-
-如果字节数或 SHA-256 不一致，不要只重命名旧文件。重新下载到临时文件，校验成功后
-再替换：
-
-```bash
-mkdir -p checkpoints
-
-wget -c \
-  'https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K/resolve/main/open_clip_pytorch_model.bin?download=true' \
-  -O checkpoints/laion2b_s32b_b79k.bin.download
-
-echo '9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4  checkpoints/laion2b_s32b_b79k.bin.download' \
-  | sha256sum -c -
-
-mv checkpoints/laion2b_s32b_b79k.bin.download \
-  checkpoints/laion2b_s32b_b79k.bin
-```
-
-只有出现以下结果才继续：
-
-```text
-checkpoints/laion2b_s32b_b79k.bin.download: OK
-```
-
-SAM ViT-H 权重 `sam_vit_h_4b8939.pth` 的官方大小为 2,564,550,879 字节，约
-2.39 GiB / 2.56 GB，可用下面的命令检查是否明显下载不完整：
-
-```bash
-ls -lh checkpoints/sam_vit_h_4b8939.pth
-stat -c '%s bytes' checkpoints/sam_vit_h_4b8939.pth
-```
-
-```bash
-export HOVSG_QUICK_OUTPUT=$HOVSG_ROOT/data/scene_graphs_quick
-
-python application/create_graph.py \
-  main.dataset=hm3dsem \
-  main.dataset_path="$HOVSG_DATA_ROOT" \
-  main.split=test \
-  main.scene_id="$SCENE_ID" \
-  main.save_path="$HOVSG_QUICK_OUTPUT" \
-  pipeline.skip_frames=100 \
-  pipeline.create_graph=false \
-  pipeline.denoise_full_pcd=false \
-  models.sam.points_per_side=6 \
-  models.sam.points_per_batch=36
-```
-
-### 检查运行输出
-
-```bash
-export SCENE_GRAPH_DIR=$HOVSG_QUICK_OUTPUT/hm3dsem/$SCENE_ID
-
-find "$SCENE_GRAPH_DIR" -maxdepth 2 -type f | sort
-ls -lh \
-  "$SCENE_GRAPH_DIR/full_pcd.ply" \
-  "$SCENE_GRAPH_DIR/masked_pcd.ply" \
-  "$SCENE_GRAPH_DIR/full_feats.pt" \
-  "$SCENE_GRAPH_DIR/mask_feats.pt"
-```
-
-第一次重点查看：
-
-```text
-full_pcd.ply
-masked_pcd.ply
-```
-
-确认点云没有翻转、重影、尺度异常后，再继续本文档第 9 节的完整层级场景图测试。
-
-## 2. 设置项目路径
-
-在服务器终端中设置以下路径。只需要根据服务器的实际目录修改前两行：
-
-```bash
 export VGGT_SAM_ROOT=/home/wlh50060092/vggtSam
 export HOVSG_ROOT=/home/wlh50060092/HOV-SG
-
-export SCANNETPP_PROCESSED_ROOT=$VGGT_SAM_ROOT/data/processed/scannetpp_pinhole_2d
-export HOVSG_DATA_ROOT=$HOVSG_ROOT/data/scannetpp_hovsg
-export HOVSG_OUTPUT_ROOT=$HOVSG_ROOT/data/scene_graphs
-```
-
-确认两个项目存在：
-
-```bash
-test -d "$VGGT_SAM_ROOT" && echo "vggtSam directory: OK"
-test -d "$HOVSG_ROOT" && echo "HOV-SG directory: OK"
-```
-
-## 3. 查找可用场景
-
-列出已经完成 vggtSam pinhole 预处理的场景：
-
-```bash
-find "$SCANNETPP_PROCESSED_ROOT" \
-  -mindepth 2 -maxdepth 2 \
-  -name scene_manifest.json \
-  -print | sort | head -20
-```
-
-本文档使用以下场景作为示例：
-
-```bash
 export SCENE_ID=00a231a370
-export SOURCE_SCENE=$SCANNETPP_PROCESSED_ROOT/$SCENE_ID
-```
-
-如果实际场景 ID 不同，只需修改 `SCENE_ID`。
-
-检查源场景：
-
-```bash
-test -f "$SOURCE_SCENE/scene_manifest.json" \
-  && echo "scene manifest: OK" \
-  || echo "ERROR: scene_manifest.json not found"
-
-find "$SOURCE_SCENE" -maxdepth 2 -type f | sort | head -30
-```
-
-转换至少需要：
-
-```text
-scene_manifest.json
-raster/<frame>.npz
-```
-
-`scene_manifest.json` 中引用的原始场景还需要包含：
-
-```text
-images/
-colmap/cameras.txt
-colmap/images.txt
-```
-
-如果缺少 `raster/*.npz`，需要在 vggtSam 中重新执行 ScanNet++ 预处理，并启用
-`--save-raster`。
-
-## 4. 激活 HOV-SG 环境
-
-```bash
-cd "$HOVSG_ROOT"
-conda activate hovsg
-```
-
-确认转换器存在：
-
-```bash
-test -f convert_scannetpp_pinhole.py \
-  && echo "converter: OK" \
-  || echo "ERROR: convert_scannetpp_pinhole.py not found"
-```
-
-## 5. 转换一个场景
-
-执行转换：
-
-```bash
-python convert_scannetpp_pinhole.py \
-  "$SOURCE_SCENE" \
-  --output-root "$HOVSG_DATA_ROOT" \
-  --split test \
-  --scene-id "$SCENE_ID" \
-  --copy
-```
-
-说明：
-
-- `--copy` 会把 RGB 复制到 HOV-SG 数据目录，传输或移动项目时更可靠。
-- 不使用 `--copy` 时，RGB 会使用绝对路径软链接，可节省空间。
-- 默认转换场景中的全部帧。
-- 已存在输出时脚本会停止，不会自动覆盖。
-
-需要重新转换时：
-
-```bash
-python convert_scannetpp_pinhole.py \
-  "$SOURCE_SCENE" \
-  --output-root "$HOVSG_DATA_ROOT" \
-  --split test \
-  --scene-id "$SCENE_ID" \
-  --copy \
-  --force
-```
-
-如果源场景帧数很多，只想快速测试前 100 帧：
-
-```bash
-python convert_scannetpp_pinhole.py \
-  "$SOURCE_SCENE" \
-  --output-root "$HOVSG_DATA_ROOT" \
-  --split test \
-  --scene-id "$SCENE_ID" \
-  --max-frames 100 \
-  --copy \
-  --force
-```
-
-如需每隔 5 帧采样一帧：
-
-```bash
-python convert_scannetpp_pinhole.py \
-  "$SOURCE_SCENE" \
-  --output-root "$HOVSG_DATA_ROOT" \
-  --split test \
-  --scene-id "$SCENE_ID" \
-  --stride 5 \
-  --max-frames 100 \
-  --copy \
-  --force
-```
-
-## 6. 检查转换结果
-
-设置转换后的场景目录：
-
-```bash
+export SOURCE_SCENE=$VGGT_SAM_ROOT/data/processed/scannetpp_pinhole_2d/$SCENE_ID
+export HOVSG_DATA_ROOT=$HOVSG_ROOT/data/scannetpp_hovsg
 export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
-: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
-test -d "$CONVERTED_SCENE" \
-  && echo "converted scene: $CONVERTED_SCENE" \
-  || echo "ERROR: converted scene directory not found"
+export HOVSG_HIERARCHY_OUTPUT=$HOVSG_ROOT/data/scene_graphs_hierarchy_yup
+export SCENE_GRAPH_DIR=$HOVSG_HIERARCHY_OUTPUT/hm3dsem/$SCENE_ID
+
+test -d "$SOURCE_SCENE" || { echo "ERROR: $SOURCE_SCENE not found"; return 1 2>/dev/null || exit 1; }
 ```
 
-检查输出结构：
+## 3. 强制重新转换为 Y-up
+
+必须使用 `--force` 覆盖旧 pose 和 metadata。RGB、depth 内容不变，主要变化是世界坐标。
 
 ```bash
-find "$CONVERTED_SCENE" -maxdepth 2 -type f | sort | head -40
+python convert_scannetpp_pinhole.py \
+  "$SOURCE_SCENE" \
+  --output-root "$HOVSG_DATA_ROOT" \
+  --split test \
+  --scene-id "$SCENE_ID" \
+  --copy \
+  --force
 ```
 
-正确结构为：
-
-```text
-<HOVSG_DATA_ROOT>/test/<SCENE_ID>/
-├── rgb/
-├── depth/
-├── pose/
-├── intrinsics/
-└── metadata.json
-```
-
-检查 RGB、depth、pose 和 intrinsics 数量：
+检查四类文件数量：
 
 ```bash
-export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
-: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
-
 for MODALITY in rgb depth pose intrinsics; do
   printf '%-12s ' "$MODALITY"
   find "$CONVERTED_SCENE/$MODALITY" -type f | wc -l
 done
 ```
 
-四个数字必须完全一致。
+四项都应为 `600`。
 
-查看元数据：
+检查 metadata：
 
 ```bash
-python -m json.tool "$CONVERTED_SCENE/metadata.json" | head -80
+python - "$CONVERTED_SCENE/metadata.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    metadata = json.load(handle)
+
+for key in ("camera_coordinates", "source_world_up_axis", "world_up_axis", "world_transform"):
+    print(f"{key}: {metadata.get(key)}")
+
+assert metadata["camera_coordinates"] == "opencv"
+assert metadata["source_world_up_axis"] == "+Z"
+assert metadata["world_up_axis"] == "+Y"
+print("Metadata validation: OK")
+PY
 ```
 
-查看第一帧位姿：
+应看到：
+
+```text
+source_world_up_axis: +Z
+world_up_axis: +Y
+world_transform: (x, y, z) -> (x, z, -y)
+```
+
+检查第一帧 pose：
 
 ```bash
 cat "$CONVERTED_SCENE/pose/000000.txt"
 ```
 
-查看第一帧相机内参：
-
-```bash
-cat "$CONVERTED_SCENE/intrinsics/000000.txt"
-```
-
-位姿应为 4×4 矩阵，内参应为 3×3 矩阵。
-
-检查第一张 RGB 和 depth 的尺寸及深度范围：
-
-```bash
-python - "$CONVERTED_SCENE" <<'PY'
-import sys
-from pathlib import Path
-
-import numpy as np
-from PIL import Image
-
-scene = Path(sys.argv[1])
-rgb_path = sorted((scene / "rgb").iterdir())[0]
-depth_path = sorted((scene / "depth").iterdir())[0]
-
-rgb = Image.open(rgb_path)
-depth = np.asarray(Image.open(depth_path))
-valid = depth[depth > 0]
-
-print("RGB:", rgb_path.name, rgb.size, rgb.mode)
-print("Depth:", depth_path.name, (depth.shape[1], depth.shape[0]), depth.dtype)
-print("Valid depth pixels:", valid.size)
-if valid.size:
-    print("Depth range (m):", float(valid.min()) / 1000.0, float(valid.max()) / 1000.0)
-PY
-```
-
-RGB 和 depth 尺寸必须一致，depth 应为 uint16，深度范围应符合室内场景尺度。
-
-## 7. 第一次运行：只验证点云和物体特征
-
-第一次建议关闭楼层和房间层级构建，先验证 RGB-D 几何、SAM masks 和 CLIP 特征。
-
-```bash
-cd "$HOVSG_ROOT"
-conda activate hovsg
-
-python application/create_graph.py \
-  main.dataset=hm3dsem \
-  main.dataset_path="$HOVSG_DATA_ROOT" \
-  main.split=test \
-  main.scene_id="$SCENE_ID" \
-  main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=100 \
-  pipeline.create_graph=false \
-  pipeline.denoise_full_pcd=false \
-  models.sam.points_per_side=6 \
-  models.sam.points_per_batch=36
-```
-
-`pipeline.skip_frames` 应根据转换后的帧数设置：
+原始相机位置约为 `[1.05, 2.71, 1.77]`，转换后最后一列前三项应大致为：
 
 ```text
-约 20 帧：pipeline.skip_frames=1
-约 100 帧：pipeline.skip_frames=2 或 5
-约 600 帧首次冒烟测试：pipeline.skip_frames=100
-约 600 帧正式测试：pipeline.skip_frames=10
+X ≈  1.05
+Y ≈  1.77
+Z ≈ -2.71
 ```
 
-当前示例实际转换出 600 帧，因此先使用 10，约处理 60 帧，足够进行第一轮效果验证。
-设为 1 会对全部 600 帧运行两轮点云/SAM/CLIP 处理，时间和显存开销很大。
+Y 应接近相机离地高度。若仍接近原始值，说明服务器仍在运行旧转换器。
 
-## 8. 查看第一次运行的输出
+## 4. 运行 12 帧完整层级图
 
-HOV-SG 会把 `dataset` 和 `scene_id` 自动添加到输出路径：
+以下命令固定选择索引 `0、50、100、...、550`，共 12 帧，不是随机选帧：
 
 ```bash
-export SCENE_GRAPH_DIR=$HOVSG_OUTPUT_ROOT/hm3dsem/$SCENE_ID
-```
-
-查看输出：
-
-```bash
-find "$SCENE_GRAPH_DIR" -maxdepth 2 -type f | sort
-```
-
-重点输出：
-
-```text
-full_pcd.ply
-masked_pcd.ply
-full_feats.pt
-mask_feats.pt
-```
-
-含义：
-
-- `full_pcd.ply`：融合全部选中 RGB-D 帧生成的彩色点云。
-- `masked_pcd.ply`：经过 SAM 分割和跨帧融合后的物体点云。
-- `full_feats.pt`：完整点云的 OpenCLIP 特征。
-- `mask_feats.pt`：各个物体 mask 的 OpenCLIP 特征。
-
-第一次测试最重要的是打开 `full_pcd.ply`，检查：
-
-- 是否存在点云翻转。
-- 多帧之间是否存在明显重影。
-- RGB 是否正确贴合几何。
-- 场景尺度是否符合真实米制尺度。
-- 相邻相机帧是否连续。
-
-如果点云出现双墙、重影或尺度异常，应先检查 pose、内参和深度，暂时不要继续构建
-楼层/房间层级图。
-
-## 9. 第二次运行：尝试完整层级场景图
-
-确认 `full_pcd.ply` 正常后，先确认转换数据的 `metadata.json` 包含：
-
-```text
-"source_world_up_axis": "+Z"
-"world_up_axis": "+Y"
-```
-
-早期转换版本没有执行 Z-up → Y-up。若缺少这两个字段，使用新版转换器重新生成场景；
-RGB/depth 不变，仅 pose 会旋转到 HOV-SG 使用的世界坐标：
-
-```bash
-python convert_scannetpp_pinhole.py \
-  "$SOURCE_SCENE" \
-  --output-root "$HOVSG_DATA_ROOT" \
-  --split test \
-  --scene-id "$SCENE_ID" \
-  --copy \
-  --force
-```
-
-然后换一个输出根目录运行完整层级构建，避免覆盖第一次结果。600 帧序列先每 50 帧
-取一帧，共使用索引 `0, 50, 100, ..., 550` 的 12 帧：
-
-```bash
-export HOVSG_HIERARCHY_OUTPUT=$HOVSG_ROOT/data/scene_graphs_hierarchy
-
-python application/create_graph.py \
+CUDA_VISIBLE_DEVICES=0 python application/create_graph.py \
   main.dataset=hm3dsem \
   main.dataset_path="$HOVSG_DATA_ROOT" \
   main.split=test \
@@ -588,194 +134,158 @@ python application/create_graph.py \
   models.sam.points_per_batch=36
 ```
 
-这次会使用索引 `0、50、100、...、550` 的 RGB、depth、pose 和相机内参；SAM 从 RGB
-生成 mask，OpenCLIP 从 RGB/mask 生成语义特征，不读取数据集真值语义标签。若 12 帧结果
-正常，可把 `pipeline.skip_frames` 改成 `25`（24 帧）或 `10`（60 帧），但耗时和内存会
-明显增加。
+| 选项 | 作用 |
+|---|---|
+| `skip_frames=50` | 从 600 帧固定抽取 12 帧 |
+| `create_graph=true` | 构建楼层、房间、物体层级和导航图 |
+| `denoise_full_pcd=false` | 关闭非常耗时的完整点云 DBSCAN |
+| 两个 `save_*_feats=false` | 不落盘 `.pt` 特征，节省磁盘 |
+| `points_per_side=6` | 降低 SAM mask 采样密度 |
+| `points_per_batch=36` | 降低 SAM 峰值显存 |
 
-完整输出可能包含：
+关闭 `.pt` 保存不影响当前进程构图，特征仍在内存中。以后若需从缓存重新评测特征，则
+必须重跑 SAM/OpenCLIP。
 
-```text
-graph/
-├── floors/
-├── rooms/
-├── objects/
-└── nav_graph/
-```
+`Merging 3d masks` 显示 `11/11` 正常：第 1 帧作为初始结果，剩余 11 帧依次合并。
 
-ScanNet++ 测试序列如果帧数少、覆盖范围小，物体级结果仍可用于检查效果，但房间、楼层
-和导航图可能不完整。这是场景覆盖不足导致的，不一定是转换错误。
+## 5. 检查坐标轴和点云范围
 
-## 10. 常见问题
-
-### 磁盘空间不足，不保存 `.pt` 特征
-
-两个 `.pt` 文件都是 OpenCLIP 特征缓存：
-
-```text
-full_feats.pt   每个融合点对应的特征，通常非常大
-mask_feats.pt   每个物体 mask 对应的特征，通常小很多
-```
-
-它们不是 RGB、depth、pose 或点云。当前进程构建层级图时使用的是内存中的特征，不依赖
-刚保存到磁盘的 `.pt`，因此可以关闭落盘：
-
-```text
-pipeline.save_full_feats=false
-pipeline.save_mask_feats=false
-```
-
-省空间运行示例：
+生成 `full_pcd.ply` 后执行：
 
 ```bash
-python application/create_graph.py \
-  main.dataset=hm3dsem \
-  main.dataset_path="$HOVSG_DATA_ROOT" \
-  main.split=test \
-  main.scene_id="$SCENE_ID" \
-  main.save_path="$HOVSG_ROOT/data/scene_graphs_hierarchy" \
-  pipeline.skip_frames=50 \
-  pipeline.create_graph=true \
-  pipeline.denoise_full_pcd=false \
-  pipeline.save_full_feats=false \
-  pipeline.save_mask_feats=false \
-  models.sam.points_per_side=6 \
-  models.sam.points_per_batch=36
+python - "$SCENE_GRAPH_DIR/full_pcd.ply" <<'PY'
+import sys
+import numpy as np
+import open3d as o3d
+
+points = np.asarray(o3d.io.read_point_cloud(sys.argv[1]).points)
+assert len(points), "empty point cloud"
+print("points:", len(points))
+
+for name, index in zip("XYZ", range(3)):
+    values = points[:, index]
+    p1, p99 = np.percentile(values, [1, 99])
+    print(
+        f"{name}: min={values.min():.3f}, max={values.max():.3f}, "
+        f"range={np.ptp(values):.3f}, robust_range={p99-p1:.3f}"
+    )
+PY
 ```
 
-关闭后仍会保存：
+MeshLab 中红色为 X、绿色为 Y、蓝色为 Z。正确结果必须满足：
 
-```text
-full_pcd.ply
-masked_pcd.ply
-objects/*.ply
-graph/（启用 create_graph 时）
-```
+- 绿色 Y 轴竖直；
+- 地板沿 X-Z 平面展开；
+- 蓝色 Z 轴不再是高度轴。
 
-代价是以后无法直接通过 `load_full_pcd_feats()` 或语义分割评测脚本加载这些缓存；需要
-特征时必须重新运行 SAM/OpenCLIP。若空间允许，折中方案是只关闭最大的文件：
+完整 Y 范围会受少量漂浮点影响，应优先看去掉两端各 1% 点后的 `robust_range`。如果
+Z 轴仍然竖直，不要继续使用该结果，重新检查第 1～3 节。
 
-```text
-pipeline.save_full_feats=false
-pipeline.save_mask_feats=true
-```
-
-查看已有文件大小：
+## 6. 检查输出
 
 ```bash
-du -h "$SCENE_GRAPH_DIR"/*.pt "$SCENE_GRAPH_DIR"/*.ply 2>/dev/null | sort -h
+find "$SCENE_GRAPH_DIR" -maxdepth 3 -type f | sort
+du -sh "$SCENE_GRAPH_DIR"
 ```
 
-### 找不到 `scene_manifest.json`
-
-说明该场景尚未完成 vggtSam pinhole 预处理，或者路径不是：
+主要结果：
 
 ```text
-data/processed/scannetpp_pinhole_2d/<scene_id>/
+full_pcd.ply       全部有效 RGB-D 点融合后的场景点云
+masked_pcd.ply     SAM mask 投影、过滤并合并后的物体候选点云
+objects/           物体点云
+floors/、rooms/    楼层和房间结果（以实际保存目录为准）
+nav_graph/         导航图结果
 ```
 
-### 提示缺少 `raster` 或 `zbuf`
+`masked_pcd.ply` 少于 `full_pcd.ply` 正常。墙、地面、天花板、SAM 漏检区域以及未通过
+有效深度和最小点数过滤的区域，只会存在于完整点云。
 
-重新运行 vggtSam ScanNet++ 预处理，并启用：
+本次只输入：
 
 ```text
---save-raster
+RGB + depth + camera-to-world pose + 相机内参
 ```
 
-`pointmaps/*.npz` 不能直接替代每帧相机 Z-depth；当前转换器使用 `raster/*.npz` 中的
-`zbuf`。
+没有使用真值语义或实例标签。SAM 生成 masks，OpenCLIP 生成视觉语义特征，几何算法构建
+楼层、房间、物体归属和导航图，不需要额外语言大模型。
 
-### 找不到 COLMAP 文件
+## 7. 结果正常后增加帧数
 
-确认 `scene_manifest.json` 中的 `scene_root` 指向有效原始场景，并包含：
+建议逐步增加，并为每次测试使用新输出目录：
 
 ```text
-colmap/cameras.txt
-colmap/images.txt
+skip_frames=50   12 帧
+skip_frames=25   24 帧
+skip_frames=10   60 帧
+skip_frames=5    120 帧
+skip_frames=1    600 帧
 ```
 
-### 输出已经存在
-
-确认旧结果不再需要后，在转换命令末尾添加：
-
-```text
---force
-```
-
-### 点云发生翻转
-
-转换器按以下约定处理：
-
-```text
-COLMAP world-to-camera (OpenCV coordinates)
-    -> camera-to-world (OpenCV coordinates)
-    -> HOV-SG point-cloud fusion
-```
-
-不要再次手动对 pose 的 Y/Z 轴翻转。
-
-### 点云出现明显重影
-
-依次检查：
-
-1. RGB、depth、pose、intrinsics 文件数量是否相同。
-2. RGB 和 depth 分辨率是否相同。
-3. COLMAP pose 是否与对应的 RGB 文件名匹配。
-4. `zbuf` 是否来自同一帧的 mesh rasterization。
-5. 相机轨迹自身是否存在漂移。
-
-### Pose 报错 `cannot reshape array of size 4 into shape (4,4)`
-
-转换器将 4×4 pose 保存为四行，每行四个数。旧版 `hm3dsem.py` 只读取第一行，因此只能
-读到 4 个数。更新本项目的：
-
-```text
-hovsg/dataloader/hm3dsem.py
-```
-
-新版会读取 pose 文件中的全部空白分隔数值，同时兼容“一行 16 个数”和“四行四列”两种
-格式。已有转换数据不需要重新生成。
-
-## 11. 最短复制版
-
-确认路径和场景 ID 后，可以依次复制以下命令：
+测试 24 帧时，只需修改：
 
 ```bash
-export VGGT_SAM_ROOT=/home/wlh50060092/vggtSam
-export HOVSG_ROOT=/home/wlh50060092/HOV-SG
-export SCENE_ID=00a231a370
-export SCANNETPP_PROCESSED_ROOT=$VGGT_SAM_ROOT/data/processed/scannetpp_pinhole_2d
-export SOURCE_SCENE=$SCANNETPP_PROCESSED_ROOT/$SCENE_ID
-export HOVSG_DATA_ROOT=$HOVSG_ROOT/data/scannetpp_hovsg
-export HOVSG_OUTPUT_ROOT=$HOVSG_ROOT/data/scene_graphs
+export HOVSG_HIERARCHY_OUTPUT=$HOVSG_ROOT/data/scene_graphs_hierarchy_yup_24f
+export SCENE_GRAPH_DIR=$HOVSG_HIERARCHY_OUTPUT/hm3dsem/$SCENE_ID
+```
 
-cd "$HOVSG_ROOT"
-conda activate hovsg
+然后重新执行第 4 节命令，并把：
 
-python convert_scannetpp_pinhole.py \
-  "$SOURCE_SCENE" \
-  --output-root "$HOVSG_DATA_ROOT" \
-  --split test \
-  --scene-id "$SCENE_ID" \
-  --copy
+```text
+pipeline.skip_frames=50
+```
 
-export CONVERTED_SCENE=$HOVSG_DATA_ROOT/test/$SCENE_ID
-: "${CONVERTED_SCENE:?CONVERTED_SCENE is not set}"
-test -d "$CONVERTED_SCENE" || { echo "ERROR: $CONVERTED_SCENE not found"; return 1 2>/dev/null || exit 1; }
-for MODALITY in rgb depth pose intrinsics; do
-  printf '%-12s ' "$MODALITY"
-  find "$CONVERTED_SCENE/$MODALITY" -type f | wc -l
-done
+改为：
 
-python application/create_graph.py \
-  main.dataset=hm3dsem \
-  main.dataset_path="$HOVSG_DATA_ROOT" \
-  main.split=test \
-  main.scene_id="$SCENE_ID" \
-  main.save_path="$HOVSG_OUTPUT_ROOT" \
-  pipeline.skip_frames=100 \
-  pipeline.create_graph=false \
-  pipeline.denoise_full_pcd=false \
-  models.sam.points_per_side=6 \
-  models.sam.points_per_batch=36
+```text
+pipeline.skip_frames=25
+```
+
+当前实现不会自动用多张 GPU 加速同一场景。最慢的 3D mask merging 主要运行在 CPU。
+多 GPU 更适合并行运行不同场景，而且每个进程必须使用不同输出目录。
+
+## 8. 提高 SAM 物体覆盖率
+
+几何和层级流程稳定后，可将：
+
+```text
+models.sam.points_per_side=12
+models.sam.points_per_batch=36
+```
+
+`points_per_side` 从 6 提高到 12 会增加小物体和背景区域的 mask 覆盖率。显存充足时可把
+`points_per_batch` 提高到默认值 `144`；它主要影响速度和显存，通常不改变覆盖率。
+
+## 9. DBSCAN 和楼层分割
+
+当前只关闭完整融合点云上的昂贵 DBSCAN：
+
+```text
+pipeline.denoise_full_pcd=false
+```
+
+这不会关闭物体 mask 合并、特征处理或层级构建。之前 CPU 长时间 100%、GPU 0% 的主要
+原因就是完整点云 DBSCAN，因此当前测试不要恢复它。
+
+若出现：
+
+```text
+clustred_peaks [...]
+floors []
+```
+
+首先确认点云为 Y-up。新版代码只对坐标正确的单层稀疏场景提供单楼层回退，不能用它
+掩盖 Z-up 输入。
+
+## 10. 当前执行顺序
+
+```text
+同步新版代码
+  → --force 重新转换
+  → 验证 metadata 为 Y-up
+  → 验证 pose 的 Y 接近相机高度
+  → 新目录运行 12 帧完整层级图
+  → MeshLab 确认绿色 Y 轴竖直
+  → 检查 floor、room、object、nav graph
+  → 增加到 24 帧或提高 SAM 密度
 ```
