@@ -1,11 +1,89 @@
 # ScanNet++ 单场景继续运行 HOV-SG
 
-本文只记录场景 `00a231a370` 接下来要执行的步骤。环境、依赖和权重均假定已经配置完成。
+本文只记录场景 `00a231a370` 接下来要执行的步骤。运行环境和依赖均假定已经配置完成。
 
 当前旧点云在 MeshLab 中显示 Z 轴竖直，但 HOV-SG 的楼层、房间和导航代码要求 Y-up。
 因此必须重新转换 pose，不能直接用旧输出继续构建层级图。
 
-## 1. 同步新版代码
+## 1. 将模型权重软链接到挂载硬盘
+
+两个模型已经位于挂载硬盘：
+
+```text
+/home/bod/86Nas/95_data_bak/FoundationModels/laion2b_s32b_b79k.bin
+/home/bod/86Nas/95_data_bak/FoundationModels/sam_vit_h_4b8939.pth
+```
+
+设置路径并确认源文件存在：
+
+```bash
+export FOUNDATION_MODELS=/home/bod/86Nas/95_data_bak/FoundationModels
+export HOVSG_ROOT=/home/wlh50060092/HOV-SG
+
+ls -lh \
+  "$FOUNDATION_MODELS/laion2b_s32b_b79k.bin" \
+  "$FOUNDATION_MODELS/sam_vit_h_4b8939.pth"
+
+stat -c '%n: %s bytes' \
+  "$FOUNDATION_MODELS/laion2b_s32b_b79k.bin" \
+  "$FOUNDATION_MODELS/sam_vit_h_4b8939.pth"
+```
+
+OpenCLIP 文件应为 `3944692325` 字节。创建项目权重目录：
+
+```bash
+mkdir -p "$HOVSG_ROOT/checkpoints"
+```
+
+如果项目中已有普通权重文件，先将其移动到挂载盘备份目录，从而释放服务器本地磁盘；
+已有软链接不会被移动：
+
+```bash
+export HOVSG_WEIGHT_BACKUP=$FOUNDATION_MODELS/hovsg_local_weight_backup
+mkdir -p "$HOVSG_WEIGHT_BACKUP"
+
+if test -f "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin" \
+   && ! test -L "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin"; then
+  mv "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin" "$HOVSG_WEIGHT_BACKUP/"
+fi
+
+if test -f "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth" \
+   && ! test -L "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth"; then
+  mv "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth" "$HOVSG_WEIGHT_BACKUP/"
+fi
+```
+
+创建绝对路径软链接：
+
+```bash
+ln -s \
+  "$FOUNDATION_MODELS/laion2b_s32b_b79k.bin" \
+  "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin"
+
+ln -s \
+  "$FOUNDATION_MODELS/sam_vit_h_4b8939.pth" \
+  "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth"
+```
+
+验证软链接最终目标可读：
+
+```bash
+ls -lh \
+  "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin" \
+  "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth"
+
+readlink -f "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin"
+readlink -f "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth"
+
+test -r "$HOVSG_ROOT/checkpoints/laion2b_s32b_b79k.bin" \
+  && echo "OpenCLIP link: OK"
+test -r "$HOVSG_ROOT/checkpoints/sam_vit_h_4b8939.pth" \
+  && echo "SAM link: OK"
+```
+
+HOV-SG 配置仍使用 `checkpoints/...`，不需要修改 YAML。运行前必须保证挂载硬盘在线。
+
+## 2. 同步新版代码
 
 把本机当前项目同步到服务器，至少包含：
 
@@ -27,7 +105,7 @@ grep -n 'Z_UP_TO_Y_UP' convert_scannetpp_pinhole.py
 
 必须同时找到矩阵定义和 `pose = Z_UP_TO_Y_UP @ pose`。找不到时先同步新版代码。
 
-## 2. 设置变量
+## 3. 设置变量
 
 ```bash
 cd /home/wlh50060092/HOV-SG
@@ -45,7 +123,7 @@ export SCENE_GRAPH_DIR=$HOVSG_HIERARCHY_OUTPUT/hm3dsem/$SCENE_ID
 test -d "$SOURCE_SCENE" || { echo "ERROR: $SOURCE_SCENE not found"; return 1 2>/dev/null || exit 1; }
 ```
 
-## 3. 强制重新转换为 Y-up
+## 4. 强制重新转换为 Y-up
 
 必须使用 `--force` 覆盖旧 pose 和 metadata。RGB、depth 内容不变，主要变化是世界坐标。
 
@@ -114,7 +192,7 @@ Z ≈ -2.71
 
 Y 应接近相机离地高度。若仍接近原始值，说明服务器仍在运行旧转换器。
 
-## 4. 运行 12 帧完整层级图
+## 5. 运行 12 帧完整层级图
 
 以下命令固定选择索引 `0、50、100、...、550`，共 12 帧，不是随机选帧：
 
@@ -148,7 +226,7 @@ CUDA_VISIBLE_DEVICES=0 python application/create_graph.py \
 
 `Merging 3d masks` 显示 `11/11` 正常：第 1 帧作为初始结果，剩余 11 帧依次合并。
 
-## 5. 检查坐标轴和点云范围
+## 6. 检查坐标轴和点云范围
 
 生成 `full_pcd.ply` 后执行：
 
@@ -179,9 +257,9 @@ MeshLab 中红色为 X、绿色为 Y、蓝色为 Z。正确结果必须满足：
 - 蓝色 Z 轴不再是高度轴。
 
 完整 Y 范围会受少量漂浮点影响，应优先看去掉两端各 1% 点后的 `robust_range`。如果
-Z 轴仍然竖直，不要继续使用该结果，重新检查第 1～3 节。
+Z 轴仍然竖直，不要继续使用该结果，重新检查第 2～4 节。
 
-## 6. 检查输出
+## 7. 检查输出
 
 ```bash
 find "$SCENE_GRAPH_DIR" -maxdepth 3 -type f | sort
@@ -210,7 +288,7 @@ RGB + depth + camera-to-world pose + 相机内参
 没有使用真值语义或实例标签。SAM 生成 masks，OpenCLIP 生成视觉语义特征，几何算法构建
 楼层、房间、物体归属和导航图，不需要额外语言大模型。
 
-## 7. 结果正常后增加帧数
+## 8. 结果正常后增加帧数
 
 建议逐步增加，并为每次测试使用新输出目录：
 
@@ -229,7 +307,7 @@ export HOVSG_HIERARCHY_OUTPUT=$HOVSG_ROOT/data/scene_graphs_hierarchy_yup_24f
 export SCENE_GRAPH_DIR=$HOVSG_HIERARCHY_OUTPUT/hm3dsem/$SCENE_ID
 ```
 
-然后重新执行第 4 节命令，并把：
+然后重新执行第 5 节命令，并把：
 
 ```text
 pipeline.skip_frames=50
@@ -244,7 +322,7 @@ pipeline.skip_frames=25
 当前实现不会自动用多张 GPU 加速同一场景。最慢的 3D mask merging 主要运行在 CPU。
 多 GPU 更适合并行运行不同场景，而且每个进程必须使用不同输出目录。
 
-## 8. 提高 SAM 物体覆盖率
+## 9. 提高 SAM 物体覆盖率
 
 几何和层级流程稳定后，可将：
 
@@ -256,7 +334,7 @@ models.sam.points_per_batch=36
 `points_per_side` 从 6 提高到 12 会增加小物体和背景区域的 mask 覆盖率。显存充足时可把
 `points_per_batch` 提高到默认值 `144`；它主要影响速度和显存，通常不改变覆盖率。
 
-## 9. DBSCAN 和楼层分割
+## 10. DBSCAN 和楼层分割
 
 当前只关闭完整融合点云上的昂贵 DBSCAN：
 
@@ -277,10 +355,11 @@ floors []
 首先确认点云为 Y-up。新版代码只对坐标正确的单层稀疏场景提供单楼层回退，不能用它
 掩盖 Z-up 输入。
 
-## 10. 当前执行顺序
+## 11. 当前执行顺序
 
 ```text
-同步新版代码
+配置挂载盘模型软链接
+  → 同步新版代码
   → --force 重新转换
   → 验证 metadata 为 Y-up
   → 验证 pose 的 Y 接近相机高度
