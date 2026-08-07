@@ -101,6 +101,22 @@ class NavigationGraph:
                 and pose[1, 3] - camera_height < upperbound
             ):
                 floor_poses_list.append(pose)
+        # Sparse RGB-D observations may not contain the true floor surface. In
+        # that case floor_min_height can sit slightly above the ground height
+        # estimated from a fixed camera height, leaving this list empty even
+        # though the camera centres clearly lie inside the floor volume. Fall
+        # back to assigning poses by camera-centre height.
+        if not floor_poses_list:
+            floor_poses_list = [
+                pose
+                for pose in poses_list
+                if floor_min_height <= pose[1, 3] < upperbound
+            ]
+            if floor_poses_list:
+                print(
+                    "no poses matched the estimated ground-height range; "
+                    f"using {len(floor_poses_list)} pose(s) inside the floor volume"
+                )
         return floor_poses_list
 
     def reset(self):
@@ -320,6 +336,10 @@ class NavigationGraph:
         Returns:
             pose_map (np.ndarray): The resulting pose region grid map. 1 is the pose region, 0 is the non-pose region.
         """
+        if not poses_list:
+            raise RuntimeError(
+                "Cannot create navigation pose region: no camera poses were assigned to this floor"
+            )
         pose_heights = np.array([pose[1, 3] for pose in poses_list])
         clusters = DBSCAN(eps=0.1).fit(pose_heights.reshape(-1, 1))
         labels, counts = np.unique(clusters.labels_, return_counts=True)
