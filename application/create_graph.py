@@ -22,7 +22,11 @@ def main(params: DictConfig):
     # save full point cloud, features, and masked point clouds (pcd for all objects)
     hovsg.save_masked_pcds(path=save_dir, state="both")
     hovsg.save_full_pcd(path=save_dir)
-    hovsg.save_full_pcd_feats(path=save_dir)
+    hovsg.save_full_pcd_feats(
+        path=save_dir,
+        save_mask_feats=params.pipeline.save_mask_feats,
+        save_full_feats=params.pipeline.save_full_feats,
+    )
     
     # for debugging: load preconstructed map as follows
     # hovsg.load_full_pcd(path=save_dir)

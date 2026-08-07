@@ -1264,7 +1264,7 @@ class Graph:
         )
         return self.full_pcd
 
-    def save_full_pcd_feats(self, path):
+    def save_full_pcd_feats(self, path, save_mask_feats=True, save_full_feats=True):
         """
         Save the full pcd with feats to disk
         :param path: str, The path to save the full pcd feats
@@ -1272,17 +1272,20 @@ class Graph:
         if not os.path.exists(path):
             os.makedirs(path)
         # check if the full pcd feats is empty list
-        if len(self.mask_feats) != 0:
+        if save_mask_feats and len(self.mask_feats) != 0:
             self.mask_feats = np.array(self.mask_feats)
             torch.save(
                 torch.from_numpy(self.mask_feats), os.path.join(path, "mask_feats.pt")
             )
-        if len(self.full_feats_array) != 0:
+        if save_full_feats and len(self.full_feats_array) != 0:
             torch.save(
                 torch.from_numpy(self.full_feats_array),
                 os.path.join(path, "full_feats.pt"),
             )
-        print("full pcd feats saved to disk in {}".format(path))
+        if save_mask_feats or save_full_feats:
+            print("full pcd feats saved to disk in {}".format(path))
+        else:
+            print("skipping feature .pt files")
         return None
 
     def load_full_pcd_feats(self, path, full_feats=False, normalize=True):

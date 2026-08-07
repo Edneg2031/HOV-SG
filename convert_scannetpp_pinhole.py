@@ -13,6 +13,14 @@ import numpy as np
 from PIL import Image
 
 
+# ScanNet++ aligned scenes use Z as the gravity/up axis. HOV-SG floor and room
+# segmentation use Y as height. This proper rotation maps (x, y, z) to
+# (x, z, -y) while preserving handedness.
+Z_UP_TO_Y_UP = np.array(
+    [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert one vggtSam/StreamVGGT processed ScanNet++ scene for HOV-SG."
@@ -279,6 +287,8 @@ def main() -> int:
                     )
 
             validate_pose(pose, source_name)
+            pose = Z_UP_TO_Y_UP @ pose
+            validate_pose(pose, source_name)
             if not np.isfinite(intrinsic).all() or intrinsic[0, 0] <= 0 or intrinsic[1, 1] <= 0:
                 raise RuntimeError(f"invalid intrinsics for {source_name}")
             if not manifest_mode:
@@ -309,6 +319,9 @@ def main() -> int:
             "depth_type": "z_depth",
             "pose_type": "camera_to_world",
             "camera_coordinates": "opencv",
+            "source_world_up_axis": "+Z",
+            "world_up_axis": "+Y",
+            "world_transform": "(x, y, z) -> (x, z, -y)",
             "intrinsics_coordinates": "opencv",
             "rgb_depth_registered": True,
             "stride": args.stride,

@@ -43,5 +43,7 @@ pipeline:
   grid_resolution: 0.05
   merge_type: sequential # hierarchical, sequential
   save_intermediate_results: false
+  save_full_feats: true
+  save_mask_feats: true
   obj_labels: HM3DSEM_LABELS
   merge_objects_graph: false

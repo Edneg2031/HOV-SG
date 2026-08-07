@@ -22,6 +22,7 @@
 - 检查 RGB 和 depth 分辨率。
 - 检查位姿矩阵、旋转矩阵和相机内参是否合法。
 - 给所有输出帧重新生成统一的六位数字 ID。
+- 将 ScanNet++ 的 Z-up 世界坐标旋转为 HOV-SG 楼层算法需要的 Y-up 坐标。
 
 ## 当前进度：600 帧已经转换成功后从这里继续
 
@@ -115,7 +116,8 @@ PY
 
 ### 运行第一轮 HOV-SG 测试
 
-当前有 600 帧。第一轮只验证流程，使用 `pipeline.skip_frames=100`，实际处理 6 帧，
+当前有 600 帧。第一轮只验证流程，使用 `pipeline.skip_frames=100`，实际处理索引
+`0、100、200、300、400、500` 的 6 帧。它们是按固定步长顺序抽取的，不是随机抽取。
 同时降低 SAM 采样密度并关闭全场景 DBSCAN。确认流程跑通后再逐步增加帧数。
 
 若终端出现 SciPy 要求 NumPy `<1.25.0` 的警告，说明 Habitat-Sim 安装过程换回了旧版
@@ -545,7 +547,28 @@ mask_feats.pt
 
 ## 9. 第二次运行：尝试完整层级场景图
 
-确认 `full_pcd.ply` 正常后，换一个输出根目录运行完整层级构建，避免覆盖第一次结果：
+确认 `full_pcd.ply` 正常后，先确认转换数据的 `metadata.json` 包含：
+
+```text
+"source_world_up_axis": "+Z"
+"world_up_axis": "+Y"
+```
+
+早期转换版本没有执行 Z-up → Y-up。若缺少这两个字段，使用新版转换器重新生成场景；
+RGB/depth 不变，仅 pose 会旋转到 HOV-SG 使用的世界坐标：
+
+```bash
+python convert_scannetpp_pinhole.py \
+  "$SOURCE_SCENE" \
+  --output-root "$HOVSG_DATA_ROOT" \
+  --split test \
+  --scene-id "$SCENE_ID" \
+  --copy \
+  --force
+```
+
+然后换一个输出根目录运行完整层级构建，避免覆盖第一次结果。600 帧序列先每 50 帧
+取一帧，共使用索引 `0, 50, 100, ..., 550` 的 12 帧：
 
 ```bash
 export HOVSG_HIERARCHY_OUTPUT=$HOVSG_ROOT/data/scene_graphs_hierarchy
@@ -556,9 +579,19 @@ python application/create_graph.py \
   main.split=test \
   main.scene_id="$SCENE_ID" \
   main.save_path="$HOVSG_HIERARCHY_OUTPUT" \
-  pipeline.skip_frames=10 \
-  pipeline.create_graph=true
+  pipeline.skip_frames=50 \
+  pipeline.create_graph=true \
+  pipeline.denoise_full_pcd=false \
+  pipeline.save_full_feats=false \
+  pipeline.save_mask_feats=false \
+  models.sam.points_per_side=6 \
+  models.sam.points_per_batch=36
 ```
+
+这次会使用索引 `0、50、100、...、550` 的 RGB、depth、pose 和相机内参；SAM 从 RGB
+生成 mask，OpenCLIP 从 RGB/mask 生成语义特征，不读取数据集真值语义标签。若 12 帧结果
+正常，可把 `pipeline.skip_frames` 改成 `25`（24 帧）或 `10`（60 帧），但耗时和内存会
+明显增加。
 
 完整输出可能包含：
 
@@ -574,6 +607,64 @@ ScanNet++ 测试序列如果帧数少、覆盖范围小，物体级结果仍可�
 和导航图可能不完整。这是场景覆盖不足导致的，不一定是转换错误。
 
 ## 10. 常见问题
+
+### 磁盘空间不足，不保存 `.pt` 特征
+
+两个 `.pt` 文件都是 OpenCLIP 特征缓存：
+
+```text
+full_feats.pt   每个融合点对应的特征，通常非常大
+mask_feats.pt   每个物体 mask 对应的特征，通常小很多
+```
+
+它们不是 RGB、depth、pose 或点云。当前进程构建层级图时使用的是内存中的特征，不依赖
+刚保存到磁盘的 `.pt`，因此可以关闭落盘：
+
+```text
+pipeline.save_full_feats=false
+pipeline.save_mask_feats=false
+```
+
+省空间运行示例：
+
+```bash
+python application/create_graph.py \
+  main.dataset=hm3dsem \
+  main.dataset_path="$HOVSG_DATA_ROOT" \
+  main.split=test \
+  main.scene_id="$SCENE_ID" \
+  main.save_path="$HOVSG_ROOT/data/scene_graphs_hierarchy" \
+  pipeline.skip_frames=50 \
+  pipeline.create_graph=true \
+  pipeline.denoise_full_pcd=false \
+  pipeline.save_full_feats=false \
+  pipeline.save_mask_feats=false \
+  models.sam.points_per_side=6 \
+  models.sam.points_per_batch=36
+```
+
+关闭后仍会保存：
+
+```text
+full_pcd.ply
+masked_pcd.ply
+objects/*.ply
+graph/（启用 create_graph 时）
+```
+
+代价是以后无法直接通过 `load_full_pcd_feats()` 或语义分割评测脚本加载这些缓存；需要
+特征时必须重新运行 SAM/OpenCLIP。若空间允许，折中方案是只关闭最大的文件：
+
+```text
+pipeline.save_full_feats=false
+pipeline.save_mask_feats=true
+```
+
+查看已有文件大小：
+
+```bash
+du -h "$SCENE_GRAPH_DIR"/*.pt "$SCENE_GRAPH_DIR"/*.ply 2>/dev/null | sort -h
+```
 
 ### 找不到 `scene_manifest.json`
 
